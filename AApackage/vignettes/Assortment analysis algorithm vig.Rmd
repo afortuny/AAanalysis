@@ -1,0 +1,419 @@
+---
+title: "Assortment Analysis Algorithm"
+author: "Alan Fortuny"
+date: "January 8, 2018"
+output: html_document
+---
+
+
+##Introduction
+
+
+The purpose of this document is to explain the workflow of the assortment analysis algorithm, which basically estimate attribute importance and give article drop recommendation.
+
+The algorithm is wraped in the function *assortment analysis* which delivers the following outputs:
+
+* **TOP5 Report**  (article drop recommendation) 
+* **Attribute guidance Report** (attribute importance guidance) 
+
+
+**General considerations**
+
+The algorithm will generate the output only in the following cases:
+
+* All the required information is provided (Article, Groupings, Splits, Volume, Price, Attributes)
+* There were at least 30 valid records : no duplicates, negative or zero sales/price...
+* There is a valid model to explain sales performance as a function of the provided attributes
+* There is a opportunity of article drop with sales loss below the threshold (normally set at 1%)
+
+**Required information**
+
+In order to be able to run the analysis we need the following information:
+
+* *Article id* - article code
+* *Groupings*  - business defined groups to which the analysis will be performed (the level at which make sense to run the analysis)
+* *Volume*     - an amount (net sales, buying volume, rate of sales, forecast) to which we measure performance of articles
+* *Price*      - the price of the article , from which we will create splits to limit demand transfer
+* *Fabric*     - the weight range of the apparel piece, from which we will create splits to limit demand transfer
+* *Attributes* - product attributes that are assumed to be relevant in driving consumer purchase behaviour and article uniqueness
+
+The data used can be illustrated in the following example:
+ 
+```{r, echo=FALSE, results='asis'}
+df <- data.frame(Articleid = c('114463',	'561718',	'561721',	'AF4053'),
+                 Grouping = c("Running_Male_Adult","Running_Male_Adult","Running_Male_Adult","Running_Male_Adult"),
+                 Volume = c(837,900,940,25),
+                 Price = c(55,65,100,90),
+                 Fabric = c('100-150',	'100-150',	'150-200',	'>500'),
+                 Color = c("Blue","Blue","Red","Black"),
+                 Material = c('Cotton','Synthetic','Cotton','Synthetic'))
+				 
+
+knitr::kable(df)
+```
+
+
+
+###High level algorithm explained
+
+
+
+
+The purpose of the algorithm is to asses which are the most important attributes driving sales and based on those findings find the smallest range that keep sales loss below the threshold (normally set at 1% of total incremental sales).
+
+For each grouping or range segment (normally adressed to a specific consumer type,ocassion and location), we will do the following:
+
+ 1.-Filter out the group of interest
+ 
+ 2.-Transfor all variables into dummy variables
+ 
+ 3.-Estimate, via ridge/lasso regression, which are the coefficients of each attribute, and which attributes have a significant contribution to sales performance. Filter out the attributes with a small contribution(smaller to the threshold)
+ 
+ 4.-Normalize attribute contribution to sum up 100%
+ 
+ 5.-Calculate article uniqueness based on incremenal sales (to be defined later)
+ 
+ 6.-Pick the articles with the smallest incremental sales and check if it generate a sales loss greater than the threshold (a parameter of the function)
+ 
+ 7.-If the cumulated sales loss is lower than the threshold, repeat 5 and 6 till the threshold is achieved
+ 
+ 8.-Generate reports based on the regression and article drop algorithm
+ 
+ 
+
+##Algorithm workflow in the function *assortment analysis*
+
+
+Once the data is properly structured, the whole assortment analysis can be performed by calling the assortment analysis function, which only requires the argument *data* to be input. *Data* contains the article, grouping, volume, price, split and attribute data as in the example shown before.
+
+
+
+###*First step : create report tables*
+
+
+
+The first step is two create two empty data frames: 
+
+**ATTRIBUTE GUIDANCE TABLE**
+
+The attribute guidance table will give indication on which are the most important attributes, and what is the expected sales uplift of each attribute.
+
+This table contains the following columns:
+
+* *Article* - the article id  
+*	*Grouping* - the grouping in which each article belongs to 
+*	*Primary_Attribute_Name* - The names of every primary attribute that was found statistically important (Color,Material...) 
+*	*Primary_Attribute_Value* - The normalized % contribution of the primary attribute over all selected attributes 
+*	*Secondary_Attribute_Name* - The names of the attribute name that correspond to the primary attribute (color=blue, material =cotton,...) 
+*	*Secondary_Attribute_Value* - The estimated coefficient of the secondary attribute name (sales units added due to the existence of the attribute) 
+*	*Rank* - The ordered importance of the primary attribute with respect all primary attributes found significant 
+* *Total_avg_value_of_.secondary_attributes_in.bundle* - Contains the sum of the coefficients of the top 3 attributes for that article 
+* *Primary_Attribute_Name_RANKn* - Name of the attribute with rank n (normally displayed from 1st to 3rd) 
+* *Primary.Attribute.Value_RANKn* - % of the normalized contribution of the primary attribute with rank n 
+* *Secondary_Attribute_Name_RANKn* - Name of the secondary level with primary attribute rank n
+* *Secondary_Attribute_Value_RANKn* - Coefficient of the secondary level with primary attribute rank n
+
+
+More specifically, below there is an example we are going to use to describe all columns. 
+
+```{r, echo=FALSE, results='asis'}
+
+table1 <-read.csv("attribute_guidance_report_views.csv")
+table1<-table1[1:10,c(2:8,21)]
+knitr::kable(table1)
+```
+
+
+**TOP5 REPORT**
+
+
+The TOP5 report shows where the demand is transferred for every article suggested to delete/drop, only for the top 5 transferability cases per article-group. This table contains the following:
+
+
+*	*Article to keep* - Articles that will receive the demand from the dropped article
+*	*Article to delete* - Article id of the suggested article to drop from the range
+*	*Grouping* - The Grouping of the article to drop (always same as the article to keep)
+* *Absolute Sales Transfered* - This is absolute units that will be transferred from the "article to delete" to the "article to keep"
+*	*Transferability percent* - The percentage of sales from "article to delete" that will be transfer to "article to keep"
+* *Sales to delete* - The units that the "article to delete" originally have before the dropped was recommended
+*	*Ranking*  - Shows from 1st to 5th, the "article to keep" that gather most of the transfered demand from the "article to delete"
+* *New Total Sales receiving sales* - Shows the new sales figure of the "article to keep" if **all drop recommendations** are implemented
+*	*Total sales transferability* - The total percentage of sales that will be transferred to other articles if an the "article to delete" is dropped from the range
+* *Sales lost relative* - Shows the % of the volume of the "article to delete" that will be lost if the "article to delete" is dropped
+* *Sales lost absolute* - Shows the units that will be lost if the "article to delete" is drop from the range
+*	*View name* - Name of the view
+*	*View value* - Value of the view
+
+The following table illustrate the top5 report content:
+
+```{r, echo=FALSE, results='asis'}
+
+table1 <-read.csv("top5_views.csv")
+table1<-head(table1[,2:12])
+knitr::kable(table1)
+```
+
+
+In this report only the top 5 articles with the highest transferability percentage appear. Thus, the total sum of the transferability percent of one Article_to_delete could be 100% if the demand goes to exactly five products or less. 
+
+
+
+Those are very frequent questions users of the algorithm have:
+
+**Why do we have articles with**:
+
+**1.	Low transferability percentage but recommendation to drop?**
+
+**2.	High sales but recommendation to drop?**
+
+*Answer 1*
+
+The aim of the analysis is to drop articles and at the same time keep the total sales transferability above 99%. The base of this percentage is not the sales per article, but the sales for all articles in scope. Thus, there are cases where articles with low transferability percent are recommended to drop, because they exhibit low net sales and quantity and the impact on the total sales would be less than 1%, even if the transferability is low. 
+
+*Answer 2*
+
+There are articles which are very efficient (high volumes), but still rebundant in terms of attribute configuration/uniqueness, and hence the transferability rate is very high, and potential sales loss very low. We suggest that instead of having two very successful articles that are identical, we just have one.
+
+
+
+
+###*Secondary step: create the splits for price and fabric*
+
+
+
+The algorithm by itself, it is not able to properly segment the range in realistic groups. Consumers who look for a warm material (high fabric weight), will not change to a light material, since this is strongly link to the consumption purpose. 
+
+Same applies to price, since willingness to pay is a function of the value perceived (the attribute configuration that forms the article) but also from budget constraints of the consumer (some will pay up to 120, and others 60 euros).
+
+Because of that, the function "price_fabric_splits"" will create fabric and price groups when data is available and enough variability exists. 
+
+The attribute guidance will be done at grouping, since that is what points to consumer preference, while the article drop will be performed at grouping-split level, since we cannot transfer demand from very different fabric-price segments. 
+
+
+
+*Fabric grouping*
+
+Fabric, which aplies only to apparel, is normally treated with pre-defined groups, based on our experience with product managers:
+
+* 0 to 150
+* 150 to 250
+* 250 to 500
+* 500 to 1000
+* above 1000
+
+This is a parameter that can be easily change in the "analytical settings"" function, which is a wrapper of the analytical parameters used during the code.Check the documentation of the function for more details.
+
+The algorithm will work as well as:
+
+ *The column is properly named as "fabric"
+ *There is valid fabric intervals: Always with the > or < sign left from the number, and "-" when a range is provided
+
+*Price grouping*
+
+Price splits cannot be fixed, and need to be per grouping, since pricing groups depend of the disparity and scale of the price of the products. The price segments for slides differ from the ones from running or originals.
+
+The function allow to provide manual populated price splits via the "price_threshold" argument, but normally the automatic clustering of price is used.
+
+Note that by default, automatic clustering with 2 groups is implemented on all grouping, via de "price_cluster_criteria" and "price_cluster_number" arguments. K-means is used for that case.
+
+The function will provide two price segments as long as the IQ (Interquartile) do not gather 70% of the observations. In other words, there is enough variance in the data to make meaningful clusters.
+
+The output of the "price_fabric_splits" function will look like this:
+
+```{r, echo=FALSE, results='asis'}
+
+table1 <-read.csv("data_group.csv")
+table1<-table1[1:10,c(2,5,35:36)]
+knitr::kable(table1)
+```
+
+
+
+
+###*Third step: Estimate attribute importance via de attribute guidance function *
+
+
+In the next function, with the attributes and splits transformed into categorical variables (price and fabric), we will estimate the coefficient(marginal impact on the volume performance) of each attribute. Note that the estimate will be done not at primary attribute level (Main Color, Main material), but for each secondary level (color=blue,color=black, material=cotton, material=synthetic...). 
+
+Since we will count with a greater number of attributes combinations than articles (p>>n), we use a automatic variable selection procedure.
+Lasso and Ridge regression, is a quick way to estimate the impact of each attribute, when the number of parameters to estimate is very high, and it also accomodate for collinear variables (quite common in product/attribute data). Note that 0 coefficients can mean two things:
+
+  * the attribtue does not correlate to explain variance in sales performance
+  * the attribute is not adding additional information because is highly collinear with other attributes used (multicolinearity)
+
+The standard set up of the function is the following:
+
+  * Extreme and long tail observations will not be use to train and validate the model, will be excluded the ones below and above the "whiskers":
+  
+      upper whisker = min(max(x), Q_3 + 1.5 * IQR) 
+      lower whisker = max(min(x), Q_1 – 1.5 * IQR)
+  
+  * The minimum required contribution to each attribute must be at least 1% of total attribute contribution (via de function parameter  atributte_threshold =  1)
+  * The ridge regression is used in the current implementation, due to the fact that it finds solutions without disregarding too many variables as with lasso, with similar out of sample accuracy performance (this is a parameter of the glmnet function, from the glmnet package). Please look at the below recommended bibliography to understand why.
+  * Only positive coefficents are accepted, due to the fact that we cannot have negative coefficients in our incremental sales calculation, as well as it was requested by biz (this is a parameter of the glmnet function, from the glmnet package) 
+
+Note that the model is estimated twice, as the first time the coefficients which are >0 are normally too much penalized. The best practice(based on the literature below) is to rerun the model with only the variables that were significant in the first step. For a detailed explanation of how the model works, please refer to:
+
+
+* Friedman, J., Hastie, T. and Tibshirani, R. (2008) Regularization Paths for Generalized Linear Models via Coordinate Descent, https://web.stanford.edu/~hastie/Papers/glmnet.pdf
+
+* Journal of Statistical Software, Vol. 33(1), 1-22 Feb 2010 http://www.jstatsoft.org/v33/i01/
+
+* Simon, N., Friedman, J., Hastie, T., Tibshirani, R. (2011) Regularization Paths for Cox's Proportional Hazards Model via Coordinate Descent, Journal of Statistical Software, Vol. 39(5) 1-13
+http://www.jstatsoft.org/v39/i05/
+
+* Tibshirani, Robert., Bien, J., Friedman, J.,Hastie, T.,Simon, N.,Taylor, J. and Tibshirani, Ryan. (2012) Strong Rules for Discarding Predictors in Lasso-type Problems, JRSSB vol 74,
+http://statweb.stanford.edu/~tibs/ftp/strong.pdf
+
+* Stanford Statistics Technical Report Glmnet Vignette https://web.stanford.edu/~hastie/glmnet/glmnet_alpha.htm
+
+
+
+
+
+###*Fourth step: Use attribute importance to calculate incremental sales via de "computation_inc_sales" function *
+
+
+  
+
+Once the primary attribute weights are calculated, it is possible to calculate the incremental sales. 
+
+The incremental sales is a concept to define the amount of sales due to the uniqueness of the article. The incremental sales are then the amount of sales that are going to be lost if one article is removed from the assortment. The intuition is that the sales across the articles with same attribute are not uniformly distributed, it is due to the uniqueness of the article.
+
+In this function, the incremental sales will be calculated, and considering the amount of incremental sales that the user is willing to keep ("sales lost threshold" parameter), the function will return a data frame containing the incremental sales of all articles in the range.
+
+Even if only some of the secondary level attributes were evaluated, in order to calculate the incremental sales, all available secondary level attributes will be used. This will ensure that articles with unique secondary level attribute will not transfer the demand to others.
+
+The steps to calculate the incremental sales are described below:
+
+**Incremental Sales calculation **
+
+1) For each article, the normalized sales are splited across the primary attributes based on the primary attribute weights estimated in the "attribute guidance function"
+
+2) The square of the amount of sales linked to each secondary level of each article is divided by the square of the total sales of the secondary level. This ratio is known as the incrementality coefficient
+
+3) This coefficient is multiplied by the normalized sales of that primary attribute, given the incremental sales of that primary attribute
+
+4) After summing the incremental sales of all the primary attributes of an article, the total incremental sales of each article are obtained
+
+The function will indicate which is the article with less incremental sales (potential sales loss if removed)
+
+### Illustrative example of incremental sales calculation
+
+In order to understand the incremental sales calculation, see the following example: 
+
+ *Products A, B and C, with normalized sales 400,150,50 respectively*
+
+  All articles main color is blue, and main color has a weight of 20%, while price is low, medium and high. Price attribute represents 80% of sales.
+
+  *Let's calculate incremental sales for A*
+
+  -First, we multiply 400x20% and 400x80%, to get the sales per primary attribute.
+
+  -Then we calculate the incrementality coefficient as follows:
+
+    For color
+    
+    "(0.20x400)^2/(0.20x400+0.20x150+0.20x50)^2=0.44"
+    (All products consider since all are blue)
+ 
+    For price
+         
+    "(0.80x400)^2/(0.80x400)^2=1"
+    (Only A consider since it is the only low price product)
+  
+   -Next we calculate the incremental sales per primary attribute for A:
+
+    For color 0.44x80=35.20
+    For price 1x320=320
+
+   -Which gives the following amount of total incremental sales
+
+    A=35.20+320=355.20
+
+    That means that if A is removed, 355.20 normalized sales will be lost, while 44.8 will be transfered. Note that this is happening due to the fact that there are other blue articles, B and C, but no low price articles. since Price is four times more important than color, most of the demand will be lost if A is removed.
+
+
+
+
+### *Fifth step: Calculate how many articles can be drop with limited sales loss via "Transferable demand function"*
+
+
+Step 4 will only make a snapshot of the current incremental sales picture, and will identify the article with least uniqueness or incremental sales.
+
+That makes it easy to identify the first article to drop, when its contribution to sales loss is less than the threshold.
+
+But there are two open points:
+
+   **We have not calculate how demand will be transferred on the remaining articles**
+   **There can be further drops with sales loss below the threshold**
+   
+For that reason there is the *Transferable demand function*, which do the following:
+
+   *1.Calculate the incremental sales for the initial range
+   *2.Identigy the article with the smallest total incremental sales and check if the loss is below threshold
+   *3.If the article can be drop, estimate how demand will be transfer and lost
+   *4.Calculate the incremental sales for the reduced range
+   *5.Repeat 3 and 4 till the threshold in terms of sales lost or range reduction is achieved (both parameters in the function: retain_threshold = 0.99,portfolio_threshold = 0.5 by default)
+
+
+Note that everytime an article is deleted, the incremental sales of the other articles change for two reasons:
+
+* Some articles will have greater sales, due to the new transferred demand
+
+* There are less articles in the portfolio, so the incremental sales of some articles will increase for those articles with same attributes.
+
+Since every time one article is dropped, the sales figures change, there is need for a iterative process that:
+
+* Select the article with lowest incremental sales, given the current portfolio
+
+* Calculate the incremental sales of new the assortment
+
+This is done as many times as to satisfy the threshold of sales lost or range reduction.
+
+The output of the "transferable demand function" will be the top5 report and the transferability all, which contains all the demand transfer
+not only for the top 5 cases. For simplicity, the wraper assortment analysis will not consolidate "transferability all" as the top5 provide
+already a great deal of detailed information  and more than 50% of the demand transferred (on median).
+
+
+
+**How is the demand transferred?**
+
+  See the following example:
+
+    Products A, B and C, with normalized sales 80,30,10, due to blue color
+
+    Suppose C is deleted, with incremental sales of 2 and transfered sales of 8
+
+    Demand of C will be transferred across A and B as follows:
+
+     * A will get 80/(80+30) of the transferable 8 units: 5,8181 units
+     * B will get 30/(80+30) of the transferable 8 units: 2,1818 units
+ 
+Note that the most successful articles will get a higher part of the transfered sales, 
+and will not being uniformly distributed.
+
+
+
+### Final notes
+
+To summarize, we have presented the main functions related to the assortment analysis, which are:
+
+   * assortment analysis: a wraper of the algorithm than run the code for all groupings
+   * price fabric splits: which create the group to split demand transfer segments
+   * attribute guidance : which identify which are the important attributes and their impact on sales performance
+   * computation inc sales : which calculate the incremental sales for a given range, given the attribute importance guidance weights
+   * transferable demand : which optimize article drop in a iterative process till the sales lost threshold has been achieved, and provides the demand                            transfer figures
+   
+By running the assortment analysis we can:
+
+   1) Identify which are the most/least sucessful attribute configuration to support range creation on future seasons
+   2) Optimize range size with minimum sales loss
+   3) Identify substitute articles based on transferability rate
+
+
+   
+
+
+
+
