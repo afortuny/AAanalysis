@@ -1,10 +1,10 @@
-require(assortment)
+require(AApAcKaGe)
 
 context("test attribute_guidance() function")
 
 test_that('Attribute Guidance test.', {
   load("data/data_group.Rda")
-  data_group <- get("data_group")
+  #data_group <- get("data_group")
 
 
   primary_attributes <- colnames(data_group)[5:34]
@@ -27,6 +27,6 @@ test_that('Attribute Guidance test.', {
   prim_attribute_val <-
     as.data.frame(unique(attribute_guidance[, c("primary_attribute_name", "primary_attribute_perc")]))
 
-  expect_true(sum(prim_attribute_val[, "primary_attribute_perc"]) == 100)
+  expect_true(sum(prim_attribute_val[, "primary_attribute_perc"]) >= 99.9999 & sum(prim_attribute_val[, "primary_attribute_perc"])<=100.0001)
 
 })

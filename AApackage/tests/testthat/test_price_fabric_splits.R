@@ -1,6 +1,6 @@
 
-require(assortment)
-
+require(AApAcKaGe)
+require(mockery)
 context("test price_fabric_splits() function")
 
 test_that('price fabric split test.', {
